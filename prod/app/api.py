@@ -1,10 +1,14 @@
 import pickle
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 import tensorflow as tf
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from cleaning import clean_text
 import nltk
+from dotenv import load_dotenv
+from database import init_database, insert_bad_prediction, get_recent_bad_predictions, increment_email_counter, update_last_email_sent
+from email_service import send_bad_predictions_email
 
 MAX_LEN = 30
 MODEL_PATH = "model_w2v_03.keras"
@@ -36,8 +40,14 @@ tokenizer = None
 
 @app.on_event("startup")
 async def load_model_and_tokenizer():
-    """Charger le modèle et le tokenizer au démarrage de l'application"""
+    """Charger le modèle, le tokenizer et initialiser la base de données"""
     global model, tokenizer
+
+    # Charger les variables d'environnement
+    load_dotenv()
+
+    # Initialiser la base de données
+    init_database()
 
     try:
         print("Chargement du modèle TensorFlow...")
@@ -90,6 +100,38 @@ class PredictResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
+
+
+class BadPredictionRequest(BaseModel):
+    text: str
+    predicted_sentiment: str  # "positif" ou "négatif"
+    confidence_score: float   # 0.0 à 1.0
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "text": "I love this product!",
+                "predicted_sentiment": "négatif",
+                "confidence_score": 0.65
+            }
+        }
+
+
+class BadPredictionResponse(BaseModel):
+    success: bool
+    message: str
+    report_count: int
+    email_sent: Optional[bool] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Signalement enregistré avec succès",
+                "report_count": 3,
+                "email_sent": True
+            }
+        }
 
 @app.get("/", tags=["Root"])
 async def root():
@@ -172,6 +214,82 @@ async def predict_sentiment(request: PredictRequest):
             status_code=500,
             detail=f"Erreur lors de la prédiction : {str(e)}"
         )
+
+
+@app.post("/report-bad-prediction", response_model=BadPredictionResponse, tags=["Feedback"])
+async def report_bad_prediction(request: BadPredictionRequest):
+    """
+    Signaler une prédiction incorrecte.
+
+    - **text**: Le texte analysé
+    - **predicted_sentiment**: Sentiment prédit (positif/négatif)
+    - **confidence_score**: Score de confiance (0-1)
+
+    Un email est envoyé toutes les 3 mauvaises prédictions.
+    """
+    try:
+        # Validation des valeurs
+        if request.predicted_sentiment not in ["positif", "négatif"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Le sentiment doit être 'positif' ou 'négatif'"
+            )
+
+        if not 0.0 <= request.confidence_score <= 1.0:
+            raise HTTPException(
+                status_code=400,
+                detail="Le score de confiance doit être entre 0.0 et 1.0"
+            )
+
+        # Insérer dans la base de données
+        row_id = insert_bad_prediction(
+            text=request.text,
+            sentiment=request.predicted_sentiment,
+            confidence=request.confidence_score
+        )
+
+        # Incrémenter le compteur et vérifier si email nécessaire
+        count = increment_email_counter()
+        email_sent = False
+
+        if count % 3 == 0:
+            # Récupérer les 3 dernières prédictions
+            recent = get_recent_bad_predictions(limit=3)
+
+            # Envoyer l'email
+            email_sent = send_bad_predictions_email(recent)
+
+            if email_sent:
+                update_last_email_sent()
+                return BadPredictionResponse(
+                    success=True,
+                    message="Signalement enregistré. Email envoyé à l'administrateur",
+                    report_count=count,
+                    email_sent=True
+                )
+            else:
+                return BadPredictionResponse(
+                    success=True,
+                    message="Signalement enregistré mais l'envoi de l'email a échoué",
+                    report_count=count,
+                    email_sent=False
+                )
+        else:
+            return BadPredictionResponse(
+                success=True,
+                message=f"Signalement enregistré ({count}/3 avant envoi email)",
+                report_count=count,
+                email_sent=False
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors du signalement : {str(e)}"
+        )
+
 
 if __name__ == "__main__":
     import uvicorn

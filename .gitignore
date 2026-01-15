@@ -1,2 +1,8 @@
 notebooks/
 prod/app.zip
+
+# Variables d'environnement (clés API, emails)
+prod/app/.env
+
+# Base de données SQLite des mauvaises prédictions
+prod/app/bad_predictions.db
