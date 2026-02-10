@@ -2,17 +2,14 @@ import pickle
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-import tensorflow as tf
-from tensorflow.keras.preprocessing.sequence import pad_sequences
 from cleaning import clean_text
 import nltk
 from dotenv import load_dotenv
 from database import init_database, insert_bad_prediction, get_recent_bad_predictions, increment_email_counter, update_last_email_sent
 from email_service import send_bad_predictions_email
 
-MAX_LEN = 30
-MODEL_PATH = "model_w2v_03.keras"
-TOKENIZER_PATH = "tokenizer.pickle"
+MODEL_PATH = "model.pkl"
+VECTORIZER_PATH = "ml-vectorizer.pkl"
 
 try:
     nltk.data.find('corpora/stopwords')
@@ -31,17 +28,17 @@ except LookupError:
 
 app = FastAPI(
     title="API d'Analyse de Sentiment",
-    description="API pour analyser le sentiment de tweets avec un modèle LSTM + Word2Vec",
+    description="API pour analyser le sentiment de tweets avec un modèle Naive Bayes",
     version="1.0.0"
 )
 
 model = None
-tokenizer = None
+vectorizer = None
 
 @app.on_event("startup")
-async def load_model_and_tokenizer():
-    """Charger le modèle, le tokenizer et initialiser la base de données"""
-    global model, tokenizer
+async def load_model_and_vectorizer():
+    """Charger le modèle, le vectorizer et initialiser la base de données"""
+    global model, vectorizer
 
     # Charger les variables d'environnement
     load_dotenv()
@@ -50,22 +47,15 @@ async def load_model_and_tokenizer():
     init_database()
 
     try:
-        print("Chargement du modèle TensorFlow...")
-        # Charger le modèle sans compiler pour éviter les problèmes de compatibilité
-        model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+        print("Chargement du modèle Naive Bayes...")
+        with open(MODEL_PATH, 'rb') as f:
+            model = pickle.load(f)
+        print(f"✅ Modèle chargé depuis {MODEL_PATH}")
 
-        # Recompiler le modèle avec les mêmes paramètres que l'entraînement
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),
-            loss='binary_crossentropy',
-            metrics=['accuracy']
-        )
-        print(f"✅ Modèle chargé et recompilé depuis {MODEL_PATH}")
-
-        print("Chargement du tokenizer...")
-        with open(TOKENIZER_PATH, 'rb') as f:
-            tokenizer = pickle.load(f)
-        print(f"✅ Tokenizer chargé depuis {TOKENIZER_PATH}")
+        print("Chargement du vectorizer...")
+        with open(VECTORIZER_PATH, 'rb') as f:
+            vectorizer = pickle.load(f)
+        print(f"✅ Vectorizer chargé depuis {VECTORIZER_PATH}")
 
     except Exception as e:
         print(f"❌ Erreur lors du chargement : {str(e)}")
@@ -150,7 +140,7 @@ async def health_check():
     """Vérifier l'état de santé de l'API"""
     return {
         "status": "healthy",
-        "model_loaded": model is not None and tokenizer is not None
+        "model_loaded": model is not None and vectorizer is not None
     }
 
 @app.post("/predict", response_model=PredictResponse, tags=["Prediction"])
@@ -163,10 +153,10 @@ async def predict_sentiment(request: PredictRequest):
     Retourne le sentiment (positif/négatif), le score brut et la confiance
     """
 
-    if model is None or tokenizer is None:
+    if model is None or vectorizer is None:
         raise HTTPException(
             status_code=503,
-            detail="Le modèle ou le tokenizer n'est pas chargé. Veuillez réessayer plus tard."
+            detail="Le modèle ou le vectorizer n'est pas chargé. Veuillez réessayer plus tard."
         )
 
     if not request.text or request.text.strip() == "":
@@ -186,18 +176,21 @@ async def predict_sentiment(request: PredictRequest):
 
         text_cleaned = " ".join(tokens)
 
-        sequences = tokenizer.texts_to_sequences([text_cleaned])
+        # Vectoriser le texte avec TF-IDF
+        text_vectorized = vectorizer.transform([text_cleaned])
 
-        padded = pad_sequences(sequences, maxlen=MAX_LEN, padding='post', truncating='post')
+        # Prédiction avec le modèle Naive Bayes
+        prediction = model.predict(text_vectorized)[0]
+        probabilities = model.predict_proba(text_vectorized)[0]
 
-        prediction = model.predict(padded, verbose=0)
-        score = float(prediction[0][0])
-
-        if score >= 0.5:
+        # Le modèle retourne 0 (négatif) ou 1 (positif)
+        if prediction == 1:
             sentiment = "positif"
+            score = float(probabilities[1])
             confidence = score
         else:
             sentiment = "négatif"
+            score = float(probabilities[1])
             confidence = 1 - score
 
         return PredictResponse(

@@ -56,7 +56,7 @@ with st.sidebar:
     st.header("⚙️ Configuration")
     api_url = st.text_input(
         "URL de l'API",
-        value="http://localhost:8000",
+        value="https://sentiments-api.test.devbystep.fr",
         help="Adresse de l'API FastAPI"
     )
 

@@ -1,0 +1,15 @@
+# Framework de test
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-mock==3.14.0
+pytest-cov==6.0.0
+
+# Testing FastAPI
+httpx==0.28.1
+
+# Mocking et fixtures
+factory-boy==3.3.1
+freezegun==1.5.1
+
+# Coverage
+coverage==7.6.10

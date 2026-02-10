@@ -9,3 +9,10 @@ nltk==3.9.1
 pandas==2.2.3
 brevo-python==7.0.0
 python-dotenv==1.0.1
+
+# Testing (pour le développement local)
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-mock==3.14.0
+pytest-cov==6.0.0
+httpx==0.28.1
